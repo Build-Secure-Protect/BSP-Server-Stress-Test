@@ -1,0 +1,145 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.+'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_archive_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+    // Widens one vanilla field for the counts (measure/Counts); Forge applies the same file at runtime.
+    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            // Mixins with obfuscated names need their reference map remapped in a dev run.
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+
+        // ./gradlew runGameTestServer: runs every registered GameTest headlessly and exits.
+        gameTestServer {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        data {
+            workingDirectory project.file('run-data')
+            args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+// Two timing mixins (timing/Timings): the block-entity tick and the entity tick, HEAD and RETURN injects only.
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "mixins.${mod_id}.json"
+}
+
+repositories {
+    mavenCentral()
+    // BSP-Core has no published artifact: its built jar is picked up from the sibling repo.
+    flatDir { dirs bsp_core_libs }
+    // The pack's mods the working setups are proven against (tools/prepare_libs.py); never committed.
+    flatDir { dirs 'libs' }
+}
+
+// Dev runs and GameTests only (owner decision D41): every jar in libs/, named <name>-<version>.jar. The built mod never
+// depends on them; it reaches them by block ids and Forge's capabilities (compat/). Without libs/ the build still works.
+def devMods = (file('libs').listFiles({ File f -> f.name ==~ /.+-[\d.]+\.jar/ } as FileFilter) ?: []) as List<File>
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+    // Optional at runtime: only the adapters in compat/ will touch it, and only when the mod is loaded.
+    compileOnly fg.deobf("blank:bsp-core:${bsp_core_version}")
+    // Dev runs load it, so the GameTests see what a BSP server does when bots log in.
+    runtimeOnly fg.deobf("blank:bsp-core:${bsp_core_version}")
+    devMods.each { File f ->
+        def m = f.name =~ /^(.+)-([\d.]+)\.jar$/
+        m.matches()
+        // MixinExtras touches no Minecraft names, so it needs no remapping
+        if (m.group(1) == 'mixinextras') {
+            runtimeOnly "blank:${m.group(1)}:${m.group(2)}"
+        } else {
+            runtimeOnly fg.deobf("blank:${m.group(1)}:${m.group(2)}")
+        }
+    }
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description,
+            bsp_core_version_range: bsp_core_version_range,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                'MixinConfigs'            : "mixins.${mod_id}.json",
+        ])
+    }
+    finalizedBy 'reobfJar'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// The text the mod sends: every key the code looks up must exist in the language file (tools/gen_lang.py writes it).
+tasks.register('checkLang', Exec) {
+    group = 'verification'
+    description = 'Checks the code against the language file (tools/check_lang.py).'
+    commandLine 'python3', 'tools/check_lang.py'
+    inputs.files(fileTree('src/main/java/com/mrgregles/bsp_server_stress_test'), 'src/main/resources/assets/bsp_server_stress_test/lang/en_us.json', 'tools/check_lang.py')
+    outputs.upToDateWhen { true }
+}
+tasks.named('check') {
+    dependsOn 'checkLang'
+}
