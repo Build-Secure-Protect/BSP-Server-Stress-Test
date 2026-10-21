@@ -120,24 +120,58 @@ public final class PlainReport {
         return new PlainReport(head, assemble(title, ended, head, results, extraSections));
     }
 
+    /** Below this many measured ticks a second the server is behind, however short its ticks are. */
+    static final double KEEP_UP_TPS = 19.0;
+
+    /** Behind 20 ticks a second: ticks over 50 ms on average, or too few ticks done each second (time lost between ticks). */
+    static boolean behind(Measurement.Result r) {
+        return r.averageMs() > 50 || r.tps() < KEEP_UP_TPS;
+    }
+
+    /**
+     * Milliseconds of each second that went to work between ticks: what is left of the second after the ticks done in it,
+     * at their average length. A server behind has no time to wait between ticks, so this is work, not idling.
+     */
+    static double betweenTicksMs(Measurement.Result r) {
+        return Math.max(0, 1000 - r.tps() * r.averageMs());
+    }
+
+    /** ", with N new chunks generated" when the step made new land, for the between-ticks lines; "" otherwise. */
+    private static String newLand(Measurement.Result r) {
+        return r.chunksGenerated() > 0 ? Text.raw("report.head.between_new_land", Fmt.count(r.chunksGenerated())) : "";
+    }
+
     private static String keptUp(List<Measurement.Result> results, boolean isRun) {
         int firstSlow = -1;
         for (int i = 0; i < results.size(); i++) {
-            if (results.get(i).averageMs() > 50) {
+            if (behind(results.get(i))) {
                 firstSlow = i;
                 break;
             }
         }
         if (!isRun) {
             Measurement.Result r = results.get(0);
-            return Text.raw(r.averageMs() > 50 ? "report.head.behind_now" : "report.head.keeping_up_now",
-                    Fmt.one(r.averageMs()), Fmt.one(r.tps()), Fmt.one(r.slowShare() * 100));
+            if (!behind(r)) {
+                return Text.raw("report.head.keeping_up_now", Fmt.one(r.averageMs()), Fmt.one(r.tps()), Fmt.one(r.slowShare() * 100));
+            }
+            return r.averageMs() > 50
+                    ? Text.raw("report.head.behind_now", Fmt.one(r.averageMs()), Fmt.one(r.tps()), Fmt.one(r.slowShare() * 100))
+                    : Text.raw("report.head.behind_now_between", Fmt.one(r.tps()), Fmt.one(r.averageMs()),
+                    Fmt.count(Math.round(betweenTicksMs(r))), newLand(r), Fmt.one(r.slowShare() * 100));
         }
         if (firstSlow < 0) {
             Measurement.Result last = results.get(results.size() - 1);
             return Text.raw("report.head.kept_up", Fmt.one(last.averageMs()), stepName(last));
         }
         Measurement.Result slow = results.get(firstSlow);
+        if (slow.averageMs() <= 50) {
+            // behind on ticks a second while each tick was short: the time went between the ticks
+            return firstSlow == 0
+                    ? Text.raw("report.head.behind_from_start_between", Fmt.one(slow.tps()), Fmt.one(slow.averageMs()),
+                    Fmt.count(Math.round(betweenTicksMs(slow))), newLand(slow))
+                    : Text.raw("report.head.fell_behind_between", stepName(slow), Fmt.one(slow.tps()), Fmt.one(slow.averageMs()),
+                    Fmt.count(Math.round(betweenTicksMs(slow))), newLand(slow));
+        }
         return firstSlow == 0
                 ? Text.raw("report.head.behind_from_start", Fmt.one(slow.averageMs()))
                 : Text.raw("report.head.fell_behind", stepName(slow), Fmt.one(slow.averageMs()), Fmt.one(slow.tps()));

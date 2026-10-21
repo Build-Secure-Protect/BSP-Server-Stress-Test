@@ -35,6 +35,7 @@ It uses no database and no Redis, and talks to no other server.
 - `/stress start <profile>`: starts a run. Step 0 measures the server as it is; each step after adds more of every option the profile includes, until every option reaches its ceiling or the average tick passes the profile's limit. Every step's figures go to a CSV in `reports/` when it ends.
 - `/stress stop`: ends the run and removes everything it made. `/stress status`: where the run is.
 - `/stress ramp up | down | hold | auto`: one step up or down now, stay on this step, or step on its own again.
+- `/stress set <option> <amount>`: one option of the running test to that amount now (added if the test does not have it, taken out at 0). The change starts a step of its own, marked "by hand" in the report; for this test only.
 - `/stress profile list | show <name> | new <name> [copy of]`, and to edit one: `include | exclude | forget <name> <pattern>`, `step | ceiling <name> <option> <amount>`, `timing <name> <stepSeconds> <settleSeconds>`, `limit <name> <ms>`.
 
 ## Profiles
@@ -71,7 +72,7 @@ Bots are real players to every mod. Before a run with bots:
 - `safety.emergencyTickSeconds` (10): one tick longer than this stops the run at once.
 - `safety.stopWindowSeconds` (20): the stretch the average tick is taken over for a profile's limit.
 - `catalogue.leaveOut`: blocks and mobs never offered as options, by id (`minecraft:wither`) or a whole mod (`somemod:*`). By default: command and structure blocks, BSP-Core's totems and ghost block, the Ender Dragon and the Wither.
-- `bots.*`: `spacing` (48 blocks between standing bots), `wanderSquare` (200), `walkBlocksPerSecond` (4.3), `flyBlocksPerSecond` (20), `flyY` (160).
+- `bots.*`: `spacing` (1,000 blocks between bots' spots, up to 100,000; only spots on already generated land are used, so standing and wandering bots never make new land), `wanderSquare` (200, around each bot's own spot), `walkBlocksPerSecond` (4.3), `flyBlocksPerSecond` (20), `flyY` (160).
 - `explosions.*`: `everySeconds` (5), `distance` (300 blocks east of each place: the blast area), `spacing` (64).
 - `limits.maxEntities` (2,000 per option) and `limits.maxSpawnedTotal` (10,000): mobs, items and orbs.
 - `machines.*`: `gridSide` (64), `spacing` (2), `heightAboveGround` (20); `limits.maxPlacedTotal` (20,000).

@@ -136,4 +136,43 @@ public class TimingGameTests {
         }
         h.succeed();
     }
+
+    /** Bytes the server thread has allocated so far (HotSpot's per-thread count). */
+    static long allocated() {
+        return ((com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean()).getCurrentThreadAllocatedBytes();
+    }
+
+    /**
+     * With no timing session open, the timers must cost nothing per tick, above all no allocation: on a server with tens
+     * of thousands of ticking blocks, an object per tick made the garbage collector grow the heap by gigabytes while idle.
+     * Measured as what 2,000 idle furnaces add to the server thread's allocation over 100 ticks, after a warm-up.
+     */
+    @GameTest(template = EMPTY, batch = "timing_idle_cost", timeoutTicks = 1200)
+    public void idle_timers_allocate_nothing_per_tick(GameTestHelper h) {
+        var server = h.getLevel().getServer();
+        var furnaces = com.mrgregles.bsp_server_stress_test.run.Options.byId("machines.minecraft.furnace");
+        int n = 2000;
+        furnaces.apply(server, n);
+        int placed = com.mrgregles.bsp_server_stress_test.machines.Placements.count("machines.minecraft.furnace");
+        long[] mark = new long[4];
+        h.runAfterDelay(400, () -> mark[0] = allocated()); // after a warm-up, so the code is compiled as it runs for hours
+        h.runAfterDelay(500, () -> {
+            mark[1] = allocated();
+            furnaces.release(server);
+        });
+        h.runAfterDelay(600, () -> mark[2] = allocated());
+        h.runAfterDelay(700, () -> {
+            mark[3] = allocated();
+            double perTick = ((mark[1] - mark[0]) - (mark[3] - mark[2])) / (double) (placed * 100L);
+            BSPServerStressTest.LOGGER.info("Idle timers: {} bytes allocated per block-entity tick ({} furnaces, with {} and without {} bytes over 100 ticks)",
+                    String.format(java.util.Locale.ROOT, "%.1f", perTick), placed, mark[1] - mark[0], mark[3] - mark[2]);
+            if (placed < n / 2) {
+                h.fail("only " + placed + " furnaces placed");
+            } else if (perTick > 8) {
+                h.fail("idle block-entity ticks allocate " + String.format(java.util.Locale.ROOT, "%.1f", perTick) + " bytes each");
+            } else {
+                h.succeed();
+            }
+        });
+    }
 }

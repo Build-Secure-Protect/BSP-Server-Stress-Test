@@ -2,6 +2,7 @@ package com.mrgregles.bsp_server_stress_test.gametest;
 
 import com.mrgregles.bsp_server_stress_test.BSPServerStressTest;
 import com.mrgregles.bsp_server_stress_test.StressConfig;
+import com.mrgregles.bsp_server_stress_test.report.CsvReport;
 import com.mrgregles.bsp_server_stress_test.run.Options;
 import com.mrgregles.bsp_server_stress_test.run.Profile;
 import com.mrgregles.bsp_server_stress_test.run.Profiles;
@@ -10,15 +11,18 @@ import com.mrgregles.bsp_server_stress_test.run.RunGuard;
 import com.mrgregles.bsp_server_stress_test.run.StressOption;
 import com.mrgregles.bsp_server_stress_test.run.StressRun;
 import com.mrgregles.bsp_server_stress_test.run.TestSpinOption;
+
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.players.ServerOpListEntry;
 import net.minecraftforge.gametest.GameTestHolder;
 import net.minecraftforge.gametest.PrefixGameTestTemplate;
 
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -362,6 +366,122 @@ public class RunGameTests {
             } catch (Exception ignored) {
                 // a test file left in run/ harms nothing
             }
+        }
+        h.succeed();
+    }
+
+    /** A made-up option for the run's rules: it only records the levels it is given and whether it was let go. */
+    static final class Recorder implements com.mrgregles.bsp_server_stress_test.run.StressOption {
+        final String id;
+        final int step;
+        final int ceiling;
+        int applied = -1;
+        boolean released;
+
+        Recorder(String id, int step, int ceiling) {
+            this.id = id;
+            this.step = step;
+            this.ceiling = ceiling;
+        }
+
+        @Override
+        public String id() {
+            return id;
+        }
+
+        @Override
+        public String describe(int level) {
+            return level + " of " + id;
+        }
+
+        @Override
+        public int defaultStep() {
+            return step;
+        }
+
+        @Override
+        public int defaultCeiling() {
+            return ceiling;
+        }
+
+        @Override
+        public com.mrgregles.bsp_server_stress_test.run.Limit limit() {
+            return com.mrgregles.bsp_server_stress_test.run.Limit.TEST_MILLISECONDS;
+        }
+
+        @Override
+        public void apply(MinecraftServer server, int level) {
+            applied = level;
+        }
+
+        @Override
+        public void release(MinecraftServer server) {
+            released = true;
+            applied = 0;
+        }
+    }
+
+    /**
+     * {@code /stress set} in a running test (D53 to D57): an option set by hand ends the step and begins one marked by
+     * hand; one set above its ceiling holds there at the next steps; an option not in the run is added and steps on with
+     * the rest; 0 takes one out (let go); the hard limit caps an amount; ending the run lets go of the added one too.
+     */
+    @GameTest(template = EMPTY)
+    public void an_option_is_set_by_hand_in_a_running_test(GameTestHelper h) {
+        MinecraftServer server = h.getLevel().getServer();
+        Recorder a = new Recorder("test.a", 1, 5);
+        Recorder b = new Recorder("test.b", 2, 6);
+        Recorder c = new Recorder("test.c", 3, 9);
+        Profile p = Profile.of("set_test", "", List.of("test.a", "test.b"), List.of());
+        p.stepSeconds = 3600;
+        p.settleSeconds = 3600;
+        List<String> said = new ArrayList<>();
+        StressRun run = new StressRun(p, List.of(a, b), said::add, 20_000_000_000L, 10_000_000_000L);
+        long now = System.nanoTime();
+        String problem = null;
+        try {
+            run.begin(server, now);
+            run.up(server, now); // step 1: a 1, b 2
+            int got = run.set(server, a, 9, now); // step 2 by hand: a 9, over its ceiling of 5
+            if (got != 9 || a.applied != 9 || run.step() != 2 || said.stream().noneMatch(l -> l.startsWith("Step 2 (by hand: test.a to 9)"))) {
+                problem = "setting a to 9: got " + got + ", applied " + a.applied + ", step " + run.step() + ", said " + said;
+            }
+            run.up(server, now); // step 3: a holds at 9, b 4
+            if (problem == null && (run.level("test.a") != 9 || run.level("test.b") != 4)) {
+                problem = "after the next step: a " + run.level("test.a") + ", b " + run.level("test.b");
+            }
+            run.set(server, c, 2, now); // c is added
+            run.up(server, now); // c steps on: 2 + 3
+            if (problem == null && (run.level("test.c") != 5 || c.applied != 5)) {
+                problem = "the added option is at " + run.level("test.c");
+            }
+            run.set(server, b, 0, now); // b is taken out
+            if (problem == null && (run.level("test.b") != -1 || !b.released)) {
+                problem = "b was not taken out: level " + run.level("test.b") + ", released " + b.released;
+            }
+            run.set(server, a, 100000, now); // capped by the hard limit of the test load
+            int max = com.mrgregles.bsp_server_stress_test.run.Limit.TEST_MILLISECONDS.max();
+            if (problem == null && run.level("test.a") != max) {
+                problem = "a set to 100000 is at " + run.level("test.a") + ", not its hard limit " + max;
+            }
+        } finally {
+            run.stop(server, "the test");
+            for (Path f : new Path[]{run.csv(), run.csv() == null ? null : CsvReport.timingsOf(run.csv()), run.report()}) {
+                try {
+                    if (f != null) {
+                        Files.deleteIfExists(f);
+                    }
+                } catch (Exception ignored) {
+                    // a test file left in run/ harms nothing
+                }
+            }
+        }
+        if (problem == null && (!a.released || !c.released)) {
+            problem = "ending the run did not let go of every option: a " + a.released + ", c " + c.released;
+        }
+        if (problem != null) {
+            h.fail(problem);
+            return;
         }
         h.succeed();
     }

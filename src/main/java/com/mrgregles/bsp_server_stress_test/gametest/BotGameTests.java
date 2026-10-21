@@ -195,4 +195,102 @@ public class BotGameTests {
             h.succeed();
         });
     }
+
+    /**
+     * A packet that cannot be encoded for a bot (on a real server, one of a mod's that expects a real client's
+     * connection) must not close the bot's connection: it is dropped and noted, and the bot stays.
+     */
+    @GameTest(template = EMPTY, batch = "bots_bad_packet", timeoutTicks = 100)
+    public void a_packet_that_cannot_be_encoded_does_not_disconnect_a_bot(GameTestHelper h) {
+        MinecraftServer server = h.getLevel().getServer();
+        boolean spawning = pauseSpawning(server);
+        Bots.setCount(server, Bots.Behaviour.STAND, 1);
+        if (Bots.count() != 1) {
+            restoreSpawning(server, spawning);
+            h.fail("the bot did not log in");
+            return;
+        }
+        Bots.Bot bot = Bots.online().get(0);
+        int before = Bots.droppedPackets();
+        // a mod's packet whose data breaks while it is encoded (here a released buffer): the failure comes in the channel
+        net.minecraft.network.FriendlyByteBuf broken = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+        broken.writeInt(1);
+        broken.release();
+        bot.player().connection.send(new net.minecraft.network.protocol.game.ClientboundCustomPayloadPacket(
+                net.minecraft.resources.ResourceLocation.tryParse(BSPServerStressTest.MODID + ":test"), broken));
+        h.runAfterDelay(5, () -> {
+            boolean online = Bots.count() == 1 && bot.channel().isOpen() && server.getPlayerList().getPlayer(bot.player().getUUID()) == bot.player();
+            int dropped = Bots.droppedPackets() - before;
+            Bots.releaseAll(server);
+            restoreSpawning(server, spawning);
+            if (!online || dropped < 1) {
+                h.fail("after a packet that cannot be encoded: still online " + online + ", dropped " + dropped);
+                return;
+            }
+            h.succeed();
+        });
+    }
+
+    /**
+     * A bot's channel is laid out as a real connection's, so code that hooks its own handlers in by name on every join
+     * (plugins, mods) finds them; it reads as a Forge client's with the server's mods; and an error in the channel (as
+     * such code's failing would be) is ignored for the bot.
+     */
+    @GameTest(template = EMPTY, batch = "bots_pipeline", timeoutTicks = 100)
+    public void a_bots_connection_is_laid_out_as_a_real_one_and_survives_errors_in_it(GameTestHelper h) {
+        MinecraftServer server = h.getLevel().getServer();
+        boolean spawning = pauseSpawning(server);
+        Bots.setCount(server, Bots.Behaviour.STAND, 1);
+        if (Bots.count() != 1) {
+            restoreSpawning(server, spawning);
+            h.fail("the bot did not log in");
+            return;
+        }
+        Bots.Bot bot = Bots.online().get(0);
+        io.netty.channel.ChannelPipeline pipeline = bot.channel().pipeline();
+        List<String> names = pipeline.names();
+        List<String> real = List.of("timeout", "legacy_query", "splitter", "decoder", "prepender", "encoder", "packet_handler");
+        int last = -1;
+        for (String name : real) {
+            int at = names.indexOf(name);
+            if (at <= last) {
+                Bots.releaseAll(server);
+                restoreSpawning(server, spawning);
+                h.fail("not laid out as a real connection: " + names);
+                return;
+            }
+            last = at;
+        }
+        if (!net.minecraftforge.network.NetworkHooks.getConnectionType(() -> bot.player().connection.connection).name().equals("MODDED")
+                || net.minecraftforge.network.NetworkHooks.getConnectionData(bot.player().connection.connection) == null
+                || net.minecraftforge.network.NetworkHooks.getConnectionData(bot.player().connection.connection).getModList().isEmpty()) {
+            Bots.releaseAll(server);
+            restoreSpawning(server, spawning);
+            h.fail("the bot's connection does not read as a Forge client's");
+            return;
+        }
+        try {
+            // as a plugin hooks in on join
+            pipeline.addBefore("packet_handler", "test_hook", new io.netty.channel.ChannelDuplexHandler());
+            pipeline.addAfter("splitter", "test_hook_2", new io.netty.channel.ChannelDuplexHandler());
+        } catch (RuntimeException e) {
+            Bots.releaseAll(server);
+            restoreSpawning(server, spawning);
+            h.fail("hooking in by name failed: " + e);
+            return;
+        }
+        int before = Bots.connectionErrors();
+        pipeline.fireExceptionCaught(new java.util.NoSuchElementException("splitter"));
+        h.runAfterDelay(5, () -> {
+            boolean online = Bots.count() == 1 && bot.channel().isOpen() && server.getPlayerList().getPlayer(bot.player().getUUID()) == bot.player();
+            int seen = Bots.connectionErrors() - before;
+            Bots.releaseAll(server);
+            restoreSpawning(server, spawning);
+            if (!online || seen < 1) {
+                h.fail("after an error in its channel: still online " + online + ", errors noted " + seen);
+                return;
+            }
+            h.succeed();
+        });
+    }
 }

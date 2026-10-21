@@ -53,7 +53,7 @@ public abstract class Mover {
         bot.serverLevel().getChunkSource().move(bot);
     }
 
-    /** {@code bots.stand}: spread out from the place on a square spiral, {@code bots.spacing} apart, on the ground. */
+    /** {@code bots.stand}: on its own spot (see {@link Spots}: far apart, only on generated land), on the ground. */
     static final class Stand extends Mover {
         Stand(Place place, int index) {
             super(place, index);
@@ -61,10 +61,11 @@ public abstract class Mover {
 
         @Override
         void start(MinecraftServer server, ServerPlayer bot) {
-            double[] xz = Movement.spread(place.centre().getMiddleBlockX() + 0.5, place.centre().getMiddleBlockZ() + 0.5, index,
-                    StressConfig.BOTS_SPACING.get());
+            int[] spot = Spots.spot(server, place, index);
+            double x = spot[0] + 0.5;
+            double z = spot[1] + 0.5;
             ServerLevel level = server.getLevel(place.dimension()) == null ? server.overworld() : server.getLevel(place.dimension());
-            put(server, bot, place, xz[0], surface(level, xz[0], xz[1]), xz[1], 0);
+            put(server, bot, place, x, surface(level, x, z), z, 0);
         }
 
         @Override
@@ -72,10 +73,19 @@ public abstract class Mover {
         }
     }
 
-    /** {@code bots.wander}: walks to one random spot after another inside a square around the place. */
+    /**
+     * {@code bots.wander}: walks to one random point after another inside a square around its own spot (see
+     * {@link Spots}), each point one whose land the bot would see is already generated; when none is found it walks
+     * back to its spot.
+     */
     static final class Wander extends Mover {
+        static final int TRIES = 8;
         private double targetX;
         private double targetZ;
+        private int homeX;
+        private int homeZ;
+        private ServerLevel level;
+        private int view = 10;
 
         Wander(Place place, int index) {
             super(place, index);
@@ -87,17 +97,27 @@ public abstract class Mover {
 
         void pickTarget() {
             ThreadLocalRandom r = ThreadLocalRandom.current();
-            targetX = place.centre().getMiddleBlockX() + r.nextDouble(-half(), half());
-            targetZ = place.centre().getMiddleBlockZ() + r.nextDouble(-half(), half());
+            for (int i = 0; i < TRIES; i++) {
+                double x = homeX + r.nextDouble(-half(), half());
+                double z = homeZ + r.nextDouble(-half(), half());
+                if (level == null || Spots.generated(level, (int) Math.floor(x), (int) Math.floor(z), view)) {
+                    targetX = x;
+                    targetZ = z;
+                    return;
+                }
+            }
+            targetX = homeX + 0.5;
+            targetZ = homeZ + 0.5;
         }
 
         @Override
         void start(MinecraftServer server, ServerPlayer bot) {
-            pickTarget();
-            double x = targetX;
-            double z = targetZ;
-            ServerLevel level = server.getLevel(place.dimension()) == null ? server.overworld() : server.getLevel(place.dimension());
-            put(server, bot, place, x, surface(level, x, z), z, 0);
+            level = server.getLevel(place.dimension()) == null ? server.overworld() : server.getLevel(place.dimension());
+            view = server.getPlayerList().getViewDistance();
+            int[] spot = Spots.spot(server, place, index);
+            homeX = spot[0];
+            homeZ = spot[1];
+            put(server, bot, place, homeX + 0.5, surface(level, homeX + 0.5, homeZ + 0.5), homeZ + 0.5, 0);
             pickTarget();
         }
 

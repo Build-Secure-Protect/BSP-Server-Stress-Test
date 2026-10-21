@@ -44,6 +44,12 @@ public class ReportGameTests {
                 Map.of(OVERWORLD.toString(), new Measurement.Result.DimensionTicks(averageMs, averageMs * 2, generated)), c, t);
     }
 
+    /** The same with {@code ticks} done in {@code seconds} of wall-clock time (fewer than 20 a second: time lost between ticks). */
+    static Measurement.Result slowStep(String label, double averageMs, long ticks, double seconds, int generated) {
+        Measurement.Result r = step(label, averageMs, generated, 300);
+        return new Measurement.Result(label, ticks, seconds, averageMs, r.worstMs(), 0.031, r.dimensions(), r.counts(), r.timings());
+    }
+
     private static boolean clean(GameTestHelper h, List<String> lines) {
         for (String l : lines) {
             if (l.contains("NaN") || l.contains(Text.PREFIX) || l.contains("%s")) {
@@ -206,5 +212,34 @@ public class ReportGameTests {
             }
         }
         h.succeed();
+    }
+
+    /**
+     * A server doing too few ticks a second is behind even when each tick is short (the owner's measurement of 2026-10-21:
+     * 11.7 ticks a second at a 16 ms average tick was reported as keeping up): the report says so, and how much of each
+     * second went to work between ticks, with the new land made.
+     */
+    @GameTest(template = EMPTY)
+    public void a_report_counts_ticks_a_second_not_only_tick_length(GameTestHelper h) {
+        PlainReport measured = PlainReport.build("m", "", List.of(slowStep("measure", 16, 117, 10, 645)), false);
+        String want = "The server was behind 20 ticks a second: 11.7 ticks a second, though the average tick took only 16.0 ms. About 813 ms of each second went to work done between ticks, which neither the tick times nor the timers see: chunks loading and being generated (645 new chunks were generated), Java pausing to clear memory, and the server catching up on waiting work. 3.1% of ticks were over 50 ms.";
+        if (measured.headline().stream().noneMatch(l -> l.equals(want)) || measured.headline().stream().anyMatch(l -> l.startsWith("The server kept up"))) {
+            h.fail("measurement at 11.7 ticks a second: " + measured.headline());
+            return;
+        }
+        PlainReport run = PlainReport.build("r", "", List.of(step("step 0 (the baseline, nothing added)", 10, 0, 300),
+                slowStep("step 1 (a)", 12, 120, 10, 0)), true);
+        if (run.headline().stream().noneMatch(l -> l.startsWith("The server fell behind 20 ticks a second at step 1 (a): 12.0 ticks a second, though the average tick took only 12.0 ms. About 856 ms of each second"))) {
+            h.fail("run falling behind on ticks a second: " + run.headline());
+            return;
+        }
+        PlainReport from = PlainReport.build("r", "", List.of(slowStep("step 0 (the baseline, nothing added)", 10, 150, 10, 0)), true);
+        if (from.headline().stream().noneMatch(l -> l.startsWith("The server was already behind 20 ticks a second before anything was added: 15.0 ticks a second"))) {
+            h.fail("behind from the start on ticks a second: " + from.headline());
+            return;
+        }
+        if (clean(h, measured.lines()) && clean(h, run.lines()) && clean(h, from.lines())) {
+            h.succeed();
+        }
     }
 }

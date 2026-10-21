@@ -5,6 +5,7 @@ import com.mrgregles.bsp_server_stress_test.StressConfig;
 import com.mrgregles.bsp_server_stress_test.bots.BotOptions;
 import com.mrgregles.bsp_server_stress_test.bots.Bots;
 import com.mrgregles.bsp_server_stress_test.bots.Movement;
+import com.mrgregles.bsp_server_stress_test.bots.Spots;
 import com.mrgregles.bsp_server_stress_test.catalogue.Catalogue;
 import com.mrgregles.bsp_server_stress_test.chunks.Place;
 import com.mrgregles.bsp_server_stress_test.chunks.Places;
@@ -21,8 +22,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * ST-10, how bots move: the spread, the steps and headings are right; real bots stand spread out, wander inside their
- * square on the ground, and fly out in a straight line at their height; the three options are ready. Live tests pause
+ * ST-10, how bots move: the spread, the steps and headings are right; real bots stand each on their own spot of
+ * generated land, wander inside the square around it on the ground, and fly out in a straight line at their height; the
+ * three options are ready. Spots skip land that is not generated, and bots spread far apart never make new land. Live tests pause
  * mob spawning and log their bots out.
  */
 @GameTestHolder(BSPServerStressTest.MODID)
@@ -77,23 +79,29 @@ public class MovementGameTests {
     }
 
     @GameTest(template = EMPTY, batch = "bots_stand_spread", timeoutTicks = 100)
-    public void standing_bots_spread_out_from_the_place(GameTestHelper h) {
+    public void standing_bots_each_stand_on_their_own_generated_spot(GameTestHelper h) {
         MinecraftServer server = h.getLevel().getServer();
         boolean spawning = BotGameTests.pauseSpawning(server);
+        int was = StressConfig.BOTS_SPACING.get();
+        StressConfig.BOTS_SPACING.set(32);
+        Spots.forget();
         try {
             Bots.setCount(server, Bots.Behaviour.STAND, 3);
             List<ServerPlayer> bots = Bots.online().stream().map(Bots.Bot::player).toList();
-            Place place = Places.inUse(server).get(0);
-            int spacing = StressConfig.BOTS_SPACING.get();
-            if (bots.size() != 3 || Math.abs(bots.get(0).getX() - (place.centre().getMiddleBlockX() + 0.5)) > 1
-                    || Math.abs(bots.get(0).getZ() - (place.centre().getMiddleBlockZ() + 0.5)) > 1) {
-                h.fail("the first bot is not at " + place.name() + ": " + bots);
+            if (bots.size() != 3) {
+                h.fail(bots.size() + " bots online");
                 return;
             }
+            int view = server.getPlayerList().getViewDistance();
             for (int a = 0; a < bots.size(); a++) {
+                ServerPlayer p = bots.get(a);
+                if (!Spots.generated(p.serverLevel(), p.getBlockX(), p.getBlockZ(), view)) {
+                    h.fail(p.getGameProfile().getName() + " stands where the land around it was not generated");
+                    return;
+                }
                 for (int b = a + 1; b < bots.size(); b++) {
-                    double d = Math.hypot(bots.get(a).getX() - bots.get(b).getX(), bots.get(a).getZ() - bots.get(b).getZ());
-                    if (d < spacing * 0.9) {
+                    double d = Math.hypot(p.getX() - bots.get(b).getX(), p.getZ() - bots.get(b).getZ());
+                    if (d < 32 * 0.9) {
                         h.fail("bots " + a + " and " + b + " stand " + (int) d + " blocks apart");
                         return;
                     }
@@ -101,6 +109,69 @@ public class MovementGameTests {
             }
         } finally {
             Bots.releaseAll(server);
+            StressConfig.BOTS_SPACING.set(was);
+            Spots.forget();
+            BotGameTests.restoreSpawning(server, spawning);
+        }
+        h.succeed();
+    }
+
+    @GameTest(template = EMPTY)
+    public void spots_skip_land_that_is_not_generated(GameTestHelper h) {
+        java.util.function.BiPredicate<Integer, Integer> onAxis = (x, z) -> Math.abs(x) <= 1000 && z == 0;
+        List<int[]> spots = new java.util.ArrayList<>();
+        // only the spots on the x axis within 1,000 blocks count as generated here: the centre and two more
+        int stopped = Spots.pick(spots, 0, 2, 0, 0, 1000, onAxis);
+        if (spots.size() != 2 || spots.get(0)[0] != 0 || spots.get(0)[1] != 0) {
+            h.fail("the first two spots: " + spots.size() + ", the first at " + (spots.isEmpty() ? "none" : spots.get(0)[0]));
+            return;
+        }
+        Spots.pick(spots, stopped, 5, 0, 0, 1000, onAxis); // goes on from where it stopped, to the end of the spiral
+        Set<String> seen = new HashSet<>();
+        for (int[] s : spots) {
+            if (!onAxis.test(s[0], s[1]) || s[0] % 1000 != 0 || !seen.add(s[0] + "," + s[1])) {
+                h.fail("a spot that is not generated, or twice: " + s[0] + ", " + s[1]);
+                return;
+            }
+        }
+        if (spots.size() != 3) {
+            h.fail("found " + spots.size() + " spots where 3 are generated");
+            return;
+        }
+        h.succeed();
+    }
+
+    @GameTest(template = EMPTY, batch = "bots_far_apart", timeoutTicks = 100)
+    public void bots_far_apart_never_make_new_land(GameTestHelper h) {
+        MinecraftServer server = h.getLevel().getServer();
+        boolean spawning = BotGameTests.pauseSpawning(server);
+        int was = StressConfig.BOTS_SPACING.get();
+        StressConfig.BOTS_SPACING.set(100000);
+        Spots.forget();
+        Place place = Places.inUse(server).get(0);
+        var level = server.getLevel(place.dimension());
+        net.minecraft.world.level.ChunkPos far = new net.minecraft.world.level.ChunkPos((place.centre().getMiddleBlockX() + 100000) >> 4, place.centre().getMiddleBlockZ() >> 4);
+        try {
+            if (Spots.full(level, far) || level.getChunkSource().hasChunk(far.x, far.z)) {
+                h.fail("the land 100,000 blocks out is already there; the test cannot tell");
+                return;
+            }
+            Bots.setCount(server, Bots.Behaviour.STAND, 2);
+            for (Bots.Bot b : Bots.online()) {
+                ServerPlayer p = b.player();
+                if (Math.abs(p.getX() - place.centre().getMiddleBlockX()) > 1000 || Math.abs(p.getZ() - place.centre().getMiddleBlockZ()) > 1000) {
+                    h.fail(p.getGameProfile().getName() + " went out to " + p.position());
+                    return;
+                }
+            }
+            if (Spots.full(level, far) || level.getChunkSource().hasChunk(far.x, far.z)) {
+                h.fail("land 100,000 blocks out was made");
+                return;
+            }
+        } finally {
+            Bots.releaseAll(server);
+            StressConfig.BOTS_SPACING.set(was);
+            Spots.forget();
             BotGameTests.restoreSpawning(server, spawning);
         }
         h.succeed();
@@ -113,7 +184,6 @@ public class MovementGameTests {
         Bots.setCount(server, Bots.Behaviour.WANDER, 2);
         List<Bots.Bot> bots = Bots.online();
         double[][] start = bots.stream().map(b -> new double[]{b.player().getX(), b.player().getZ()}).toArray(double[][]::new);
-        Place place = Places.inUse(server).get(0);
         double half = StressConfig.BOTS_WANDER_SQUARE.get() / 2.0;
         h.runAfterDelay(40, () -> {
             try {
@@ -132,7 +202,8 @@ public class MovementGameTests {
                         h.fail(p.getGameProfile().getName() + " moved faster than it walks: " + moved);
                         return;
                     }
-                    if (Math.abs(p.getX() - place.centre().getMiddleBlockX()) > half + 1 || Math.abs(p.getZ() - place.centre().getMiddleBlockZ()) > half + 1) {
+                    // it started on its own spot, the middle of its square
+                    if (Math.abs(p.getX() - start[i][0]) > half + 1 || Math.abs(p.getZ() - start[i][1]) > half + 1) {
                         h.fail(p.getGameProfile().getName() + " left its square: " + p.position());
                         return;
                     }

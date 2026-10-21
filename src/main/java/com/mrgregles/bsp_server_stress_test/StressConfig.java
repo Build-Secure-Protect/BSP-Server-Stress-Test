@@ -139,8 +139,12 @@ public final class StressConfig {
         b.pop();
 
         b.comment("How bots stand and move (bots.stand, bots.wander, bots.fly_out). They are shared between the chunk places, or spawn.").push("bots");
-        BOTS_SPACING = b.comment("Blocks between standing bots, spread out from each place.").defineInRange("spacing", 48, 1, 1024);
-        BOTS_WANDER_SQUARE = b.comment("The side of the square, in blocks, wandering bots stay inside around their place.").defineInRange("wanderSquare", 200, 16, 10000);
+        BOTS_SPACING = b.comment("Blocks between the spots standing and wandering bots are given, on a square spiral out from each place.",
+                "Only spots whose land the bot would see (the server's view distance around it) is already generated are used,",
+                "so these bots never make new land; with fewer such spots than bots, bots share them (the log says so).")
+                .defineInRange("spacing", 1000, 1, 100000);
+        BOTS_WANDER_SQUARE = b.comment("The side of the square, in blocks, a wandering bot stays inside around its own spot (only on generated land).")
+                .defineInRange("wanderSquare", 200, 16, 10000);
         BOTS_WALK_SPEED = b.comment("Blocks a second a wandering bot walks (a player walks 4.3).").defineInRange("walkBlocksPerSecond", 4.3, 0.1, 100.0);
         BOTS_FLY_SPEED = b.comment("Blocks a second a flying bot covers (a player sprint-flying in creative does about 21).").defineInRange("flyBlocksPerSecond", 20.0, 0.1, 200.0);
         BOTS_FLY_Y = b.comment("The height flying bots keep.").defineInRange("flyY", 160, -60, 319);

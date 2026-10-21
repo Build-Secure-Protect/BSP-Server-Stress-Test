@@ -43,11 +43,24 @@ import java.util.stream.Stream;
  * (their player tick, their move, and the channel emptied), and they never answer or miss a keep-alive. Each bot belongs
  * to a group by how it behaves (stand, wander, fly) and is placed at one of the chunk places (or spawn). When a bot leaves, its
  * player, stats and advancement files and its line in {@code usercache.json} are deleted.
+ * <p>
+ * A bot's channel is laid out as a real connection's is ({@code timeout}, {@code legacy_query}, {@code splitter},
+ * {@code decoder}, {@code prepender}, {@code encoder}, {@code packet_handler}), so plugins and mods that hook their
+ * own handlers in by those names on every join find them; it carries what a Forge client with every mod the server has
+ * hands over in its login handshake (the network version, the mods, the channels), which bots skip, so Forge and the
+ * mods see an ordinary modded player; and it gives a loopback network address. A packet that cannot
+ * be encoded for a bot is dropped for it, and any other error in its channel is ignored for it; each is noted once per
+ * kind in the log with its stack trace, instead of closing the bot's connection as it would a real one's. When a bot is
+ * disconnected all the same, the log says why.
  */
 public final class Bots {
     public static final String PREFIX = "SSTBot_";
     private static final Map<UUID, Bot> ONLINE = new LinkedHashMap<>();
     private static final Set<UUID> LOGIN_SEEN = new HashSet<>();
+    private static final Set<String> DROPPED_KINDS = new HashSet<>();
+    private static final Set<String> ERROR_KINDS = new HashSet<>();
+    private static int dropped;
+    private static int errors;
 
     /** How a group of bots behaves (D8), and the mover each bot of it gets. */
     public enum Behaviour {
@@ -77,7 +90,10 @@ public final class Bots {
                 LOGIN_SEEN.add(e.getEntity().getUUID());
             }
         });
-        MinecraftForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> releaseAll(e.getServer()));
+        MinecraftForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> {
+            releaseAll(e.getServer());
+            Spots.forget();
+        });
     }
 
     public static String nameOf(int number) {
@@ -102,6 +118,74 @@ public final class Bots {
 
     public static synchronized List<Bot> online() {
         return List.copyOf(ONLINE.values());
+    }
+
+    /** Packets dropped because they could not be encoded for a bot, since the server started. */
+    public static synchronized int droppedPackets() {
+        return dropped;
+    }
+
+    /**
+     * Sits last in a bot's channel, where every packet sent to it starts: a packet the channel fails to encode is noted
+     * and counted, and its send counted as done, so the failure never reaches the connection (which would close).
+     */
+    static final class DropFailures extends io.netty.channel.ChannelOutboundHandlerAdapter {
+        private final String bot;
+
+        DropFailures(String bot) {
+            this.bot = bot;
+        }
+
+        @Override
+        public void write(io.netty.channel.ChannelHandlerContext ctx, Object msg, io.netty.channel.ChannelPromise promise) {
+            io.netty.channel.ChannelPromise inner = ctx.newPromise();
+            inner.addListener(f -> {
+                if (!f.isSuccess()) {
+                    noteDropped(bot, msg, f.cause());
+                }
+                promise.trySuccess();
+            });
+            ctx.write(msg, inner);
+        }
+    }
+
+    /** Errors in bots' channels ignored for them, since the server started. */
+    public static synchronized int connectionErrors() {
+        return errors;
+    }
+
+    /**
+     * Sits first and last in a bot's channel: an error that would reach the bot's connection (and close it) or run off
+     * the end of the channel is noted and goes no further.
+     */
+    static final class IgnoreErrors extends io.netty.channel.ChannelInboundHandlerAdapter {
+        private final String bot;
+
+        IgnoreErrors(String bot) {
+            this.bot = bot;
+        }
+
+        @Override
+        public void exceptionCaught(io.netty.channel.ChannelHandlerContext ctx, Throwable cause) {
+            noteError(bot, cause);
+        }
+    }
+
+    static synchronized void noteError(String bot, Throwable cause) {
+        errors++;
+        if (ERROR_KINDS.add(cause.getClass().getName() + ": " + cause.getMessage())) {
+            BSPServerStressTest.LOGGER.warn("An error in bot {}'s connection is ignored for bots (a real player's connection would close; said once per kind): {}",
+                    bot, String.valueOf(cause), cause);
+        }
+    }
+
+    static synchronized void noteDropped(String bot, Object packet, Throwable cause) {
+        dropped++;
+        String kind = packet.getClass().getName();
+        if (DROPPED_KINDS.add(kind)) {
+            BSPServerStressTest.LOGGER.warn("A {} could not be encoded for bot {}; packets like it that fail for a bot are dropped instead of closing its connection (said once per kind): {}",
+                    kind, bot, String.valueOf(cause), cause);
+        }
     }
 
     /** Whether the server's login event reached the end of its listeners for this bot. */
@@ -132,8 +216,10 @@ public final class Bots {
                 next++; // that number is online already (a bot, or someone using the name)
             }
             int index = count(behaviour);
-            Place place = places.get(index % places.size());
-            if (login(server, next++, behaviour, index, behaviour.create(place, index / places.size())) == null) {
+            // each bot its own spot by its number, across the groups: shared between the places in turn
+            int number = next++;
+            Place place = places.get((number - 1) % places.size());
+            if (login(server, number, behaviour, index, behaviour.create(place, (number - 1) / places.size())) == null) {
                 break;
             }
         }
@@ -155,14 +241,32 @@ public final class Bots {
         String name = nameOf(number);
         GameProfile profile = new GameProfile(uuidOf(name), name);
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
-        EmbeddedChannel channel = new EmbeddedChannel(connection); // the connection takes the channel when it opens
+        EmbeddedChannel channel = new EmbeddedChannel(false, false); // laid out first, then opened, as a real one
+        io.netty.channel.ChannelPipeline pipeline = channel.pipeline();
+        pipeline.addLast("bsp_server_stress_test_ignore_errors", new IgnoreErrors(name));
+        // a real server connection's handlers by name and in order (ServerConnectionListener), so code that hooks its
+        // own in by those names finds them; the timeout and legacy query ones do nothing for a bot
+        pipeline.addLast("timeout", new io.netty.channel.ChannelDuplexHandler());
+        pipeline.addLast("legacy_query", new io.netty.channel.ChannelDuplexHandler());
         try {
-            // what a real connection has: packets are encoded as they would be for a player, then thrown away
-            Connection.configureSerialization(channel.pipeline(), PacketFlow.SERVERBOUND);
-            connection.setProtocol(ConnectionProtocol.PLAY);
-        } catch (RuntimeException e) {
+            // packets are encoded as they would be for a player, then thrown away
+            Connection.configureSerialization(pipeline, PacketFlow.SERVERBOUND);
+        } catch (RuntimeException | LinkageError e) {
             BSPServerStressTest.LOGGER.warn("Bot packets will not be encoded: {}", e.toString());
         }
+        pipeline.addLast("packet_handler", connection);
+        pipeline.addLast("bsp_server_stress_test_drop_failures", new DropFailures(name));
+        pipeline.addLast("bsp_server_stress_test_ignore_errors_last", new IgnoreErrors(name));
+        asForgeClient(channel);
+        try {
+            channel.register(); // opens it: the connection takes the channel, as from a real socket
+            connection.setProtocol(ConnectionProtocol.PLAY);
+        } catch (Exception e) {
+            BSPServerStressTest.LOGGER.error("Bot {} could not open its connection", name, e);
+            channel.close();
+            return null;
+        }
+        loopbackAddress(connection, number);
         ServerPlayer player = new ServerPlayer(server, server.overworld(), profile);
         Bot bot = new Bot(number, player, channel, behaviour, index, mover);
         ONLINE.put(profile.getId(), bot); // before the login, so every listener can tell it is a bot
@@ -184,6 +288,66 @@ public final class Bots {
         }
         drain(channel);
         return player;
+    }
+
+    /**
+     * Gives the connection a loopback network address (port 40000 and the bot's number): an in-memory channel has none,
+     * and code written for real connections (Bukkit's on Mohist, plugins) may expect one.
+     */
+    private static void loopbackAddress(Connection connection, int number) {
+        java.net.InetSocketAddress address = new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 40000 + number);
+        for (java.lang.reflect.Field f : Connection.class.getDeclaredFields()) {
+            if (f.getType() == java.net.SocketAddress.class && !java.lang.reflect.Modifier.isStatic(f.getModifiers())) {
+                try {
+                    f.setAccessible(true);
+                    f.set(connection, address);
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                    BSPServerStressTest.LOGGER.debug("Could not give a bot a network address: {}", e.toString());
+                }
+            }
+        }
+    }
+
+    /**
+     * Sets on the channel what Forge's login handshake records for a Forge client that has every mod and channel this
+     * server has (Forge's {@code NetworkConstants.FML_NETVERSION} and {@code FML_CONNECTION_DATA}): without them Forge
+     * and the mods cannot tell what kind of client a bot is and fail on it. Forge keeps these package-private, so they
+     * are set by reflection; a Forge that has moved them leaves the bot without, which the log says.
+     */
+    @SuppressWarnings("unchecked")
+    private static void asForgeClient(EmbeddedChannel channel) {
+        try {
+            Class<?> constants = Class.forName("net.minecraftforge.network.NetworkConstants");
+            java.lang.reflect.Field versionKey = constants.getDeclaredField("FML_NETVERSION");
+            versionKey.setAccessible(true);
+            channel.attr((io.netty.util.AttributeKey<String>) versionKey.get(null)).set((String) constants.getField("NETVERSION").get(null));
+
+            Map<String, org.apache.commons.lang3.tuple.Pair<String, String>> mods = new LinkedHashMap<>();
+            for (net.minecraftforge.forgespi.language.IModInfo m : net.minecraftforge.fml.ModList.get().getMods()) {
+                mods.put(m.getModId(), org.apache.commons.lang3.tuple.Pair.of(m.getDisplayName(), m.getVersion().toString()));
+            }
+            java.lang.reflect.Method channels = Class.forName("net.minecraftforge.network.NetworkRegistry").getDeclaredMethod("buildChannelVersions");
+            channels.setAccessible(true);
+            Class<?> dataClass = Class.forName("net.minecraftforge.network.ConnectionData");
+            java.lang.reflect.Constructor<?> make = dataClass.getDeclaredConstructor(Map.class, Map.class);
+            make.setAccessible(true);
+            Object data = make.newInstance(mods, channels.invoke(null));
+            java.lang.reflect.Field dataKey = constants.getDeclaredField("FML_CONNECTION_DATA");
+            dataKey.setAccessible(true);
+            channel.attr((io.netty.util.AttributeKey<Object>) dataKey.get(null)).set(data);
+        } catch (ReflectiveOperationException | LinkageError | RuntimeException e) {
+            BSPServerStressTest.LOGGER.warn("A bot's connection could not be marked as a Forge client's: {}", e.toString());
+        }
+    }
+
+    /** Why a bot's connection closed, as the server or a mod said it, or empty when nothing was said. */
+    private static String reasonOf(Bot bot) {
+        try {
+            net.minecraft.network.chat.Component reason = bot.player.connection.connection.getDisconnectedReason();
+            return reason == null ? "" : reason.getString();
+        } catch (RuntimeException e) {
+            return "";
+        }
     }
 
     private static void logout(MinecraftServer server, Bot bot, String reason) {
@@ -266,7 +430,10 @@ public final class Bots {
             for (Bot bot : List.copyOf(ONLINE.values())) {
                 if (!bot.channel.isOpen() || bot.player.hasDisconnected()) {
                     // kicked by the server or a mod: finish the logout the server would have done for a real connection
-                    logout(server, bot, Text.raw("bots.kicked"));
+                    String why = reasonOf(bot);
+                    String name = bot.player.getGameProfile().getName();
+                    BSPServerStressTest.LOGGER.warn(Text.raw("bots.kicked_log", name, why.isEmpty() ? Text.raw("bots.no_reason") : why));
+                    logout(server, bot, why.isEmpty() ? Text.raw("bots.kicked") : Text.raw("bots.kicked_because", why));
                     continue;
                 }
                 try {

@@ -48,6 +48,10 @@ final class RunCommands {
                                 .executes(ctx -> start(ctx.getSource(), StringArgumentType.getString(ctx, "profile")))))
                 .then(Commands.literal("stop").executes(ctx -> stop(ctx.getSource())))
                 .then(Commands.literal("status").executes(ctx -> status(ctx.getSource())))
+                .then(Commands.literal("set").then(Commands.argument("option", StringArgumentType.word()).suggests(OPTIONS)
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
+                                .executes(ctx -> set(ctx.getSource(), StringArgumentType.getString(ctx, "option"),
+                                        IntegerArgumentType.getInteger(ctx, "amount"))))))
                 .then(Commands.literal("ramp")
                         .then(Commands.literal("up").executes(ctx -> ramp(ctx.getSource(), "up")))
                         .then(Commands.literal("down").executes(ctx -> ramp(ctx.getSource(), "down")))
@@ -182,6 +186,44 @@ final class RunCommands {
         if (!results.isEmpty()) {
             Measurement.Result r = results.get(results.size() - 1);
             source.sendSuccess(() -> Text.t("run.status.last", Fmt.one(r.tps()), Fmt.one(r.averageMs()), Fmt.one(r.worstMs())), false);
+        }
+        return 1;
+    }
+
+    /**
+     * {@code /stress set <option> <amount>} (owner decisions D53 to D57): one option to an amount in the running test,
+     * added when the run does not have it, taken out at 0, capped by the hard limits only; this run only, with the
+     * profile commands that would keep it for the next run.
+     */
+    private static int set(CommandSourceStack source, String id, int amount) {
+        StressRun run = RunEngine.current();
+        if (run == null) {
+            source.sendFailure(Text.t("set.no_run"));
+            return 0;
+        }
+        StressOption option = Options.byId(id);
+        if (option == null) {
+            source.sendFailure(Text.t("set.unknown", id));
+            return 0;
+        }
+        if (amount == 0 && run.level(id) < 0) {
+            source.sendFailure(Text.t("set.not_in_run", id));
+            return 0;
+        }
+        int got = run.set(source.getServer(), option, amount, System.nanoTime());
+        if (got < 0) {
+            source.sendFailure(Text.t("set.failed", id));
+            return 0;
+        }
+        if (got < amount) {
+            source.sendFailure(Text.t("set.capped", id, Fmt.count(got)));
+        }
+        Profile profile = run.profile();
+        if (got > 0 && !profile.includes(id)) {
+            source.sendSuccess(() -> Text.t("set.keep", "/stress profile include " + profile.name + " " + id
+                    + " ; /stress profile ceiling " + profile.name + " " + id + " " + got), false);
+        } else if (got > profile.ceilingOf(option)) {
+            source.sendSuccess(() -> Text.t("set.keep", "/stress profile ceiling " + profile.name + " " + id + " " + got), false);
         }
         return 1;
     }

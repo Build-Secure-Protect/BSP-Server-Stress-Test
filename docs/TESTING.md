@@ -212,3 +212,57 @@ On a test server with the full pack (setups 100 blocks above the ground at spawn
 4. `/stress stop`: every setup gone, nothing on the ground, no trains left (`/c trains` or Create's train map shows none named "SST ...").
 5. Stop the server from the console mid-run, start it, `/stress cleanup`: blocks gone and "N trains left by a Create train line were taken out of Create's records" if a train line was running.
 6. Known world records the mods themselves keep (D4 cannot cover them): AE2 and Refined Storage keep network data, Create keeps its track graph and trains in the world's saved data. The setups leave nothing in AE2's cells or Refined Storage's storage, and remove their tracks and trains, but some empty records may stay in those mods' files on the throw-away world.
+
+## 2026-10-21: bots leaving straight after joining (first trial on the test server)
+
+Seen on the test server: every bot joined and left within a second ("lost connection: The bot's connection was closed."). Reproduced headless: a packet that fails while it is encoded for a bot closes the bot's connection, exactly as a real connection's would, and the mod finished the logout with its own generic line, hiding the cause. Now: such a packet is dropped for the bot and the log warns once per kind, naming the packet and the error; bots' connections give a loopback address; a bot disconnected all the same is logged with the reason the server or mod gave. 88 GameTests pass (twice running), one new: a packet broken while encoding (a custom payload over a released buffer) leaves the bot online and is counted as dropped.
+
+On the test server:
+1. Replace the jar, restart, and start the same run (`/stress start players30`).
+2. The bots should stay on. In the log, look for `could not be encoded for bot`: each line names a packet some mod sends that a bot cannot take. Send me those lines (they show which mod expects a real client).
+3. If bots still leave, look for `Stress test bot SSTBot_... was disconnected by the server or a mod:` followed by the reason, and send me those lines and any error just above them.
+
+## 2026-10-21: bots leaving with "NoSuchElementException: splitter" (second trial)
+
+Seen on the test server after the first fix: every bot left at once with "Internal Exception: java.util.NoSuchElementException: splitter". Code that hooks its own handler into every joining player's connection by name (plugins on Mohist, mods) did not find the names a real connection has: a bot's in-memory connection had them in another order, with the connection handler unnamed, and no `timeout` or `legacy_query`. Laying it out as a real connection showed the next layer headless: Forge's own join hook (`NetworkFilters`) then ran for bots and failed, because bots skip the login handshake that records what kind of client a player is. Now a bot's connection is laid out as a real server connection's and carries what a Forge client with every mod and channel of the server hands over at login (Forge's network version and connection data), and any error in it is logged once per kind and ignored for the bot. 89 GameTests pass (twice running), one new: a bot's connection has the real names in the real order, reads as a modded Forge client with the server's mod list, takes handlers hooked in before `packet_handler` and after `splitter`, and stays online through a `NoSuchElementException: splitter` fired into it.
+
+On the test server:
+1. Replace the jar, restart, and start the run again (`/stress start players30`).
+2. The bots should stay on. In the log, look for `is ignored for bots` and `could not be encoded for bot`: each line names something that would have thrown a bot off, with its stack trace (the plugin or mod is in it). Send me those.
+3. If bots still leave: the `was disconnected by the server or a mod:` lines and anything just above them.
+
+## 2026-10-21: memory with the mod installed and idle
+
+Reported: about 18 GB used with the mod installed and no run going, against 8.15 GB without. spark's health reports showed the same heap in use with and without the mod (3.3 to 3.5 GB of 27.7 GB); what differed was the young generation the garbage collector had reserved (Eden 6.2 GB, survivors full) and CPU, and a report without the mod taken just after a restart showed the same (Eden 6.3 GB, survivors full, 23% CPU, a 169 ms tick): Java's collector grows its reserved space during a 300-mod server's startup and is slow to hand it back, whatever mods are installed. Not the mod.
+
+Checked headless all the same: everything the mod does while idle returns at once or works in fixed-size buffers, the catalogue built at start keeps about 1 MB (17 mods, 123 ms), and one new GameTest measures what an idle block-entity tick allocates with the timing hooks in place: 1.4 and -2.2 bytes per tick on two runs (noise around zero; the hook's callback object is optimised away by the compiler), failing above 8. 90 GameTests pass.
+
+To compare memory fairly on the server: take both readings at the same time after a restart (10 minutes in), with `/spark health --memory`, and read "Memory usage" (the heap in use), not the host's figure (what Java has reserved). For a steady figure on the host, give Java the same `-Xms` as `-Xmx`, so it reserves all of it from the start.
+
+## 2026-10-21: bots spread far apart, on generated land only
+
+Owner feedback from the third trial (bots now stay on): the bots stood close together; real players may be thousands of blocks apart. Now each standing or wandering bot has its own spot, `bots.spacing` apart (1,000 by default, up to 100,000) on a square spiral out from each place, and only spots whose land the bot would see is already generated are used (read from the chunks' saved status, loading nothing), so no new land is made. A wandering bot wanders the square around its own spot, on generated land only. 92 GameTests pass (twice running), three new or rewritten: standing bots each on their own spot 32 apart, every one on generated land; the spot search skips land that is not generated, gives each spot once and goes on from where it stopped; at a spacing of 100,000 bots share the generated spot near the place and no land 100,000 blocks out is made or even loaded.
+
+Note: the log line "logged in with entity id ... at (...)" is where a bot joins (the world spawn); it is moved to its spot right after.
+
+On the test server:
+1. In `config/bsp_server_stress_test/settings.toml`, `[bots]`, set `spacing` to how far apart you want them (an existing file keeps its old value, 48 or 208). For 30 bots: at 1,000 they reach about 3,000 blocks out from the place; at 2,000, about 6,000.
+2. Restart, start the run, and watch the log: "Place 'spawn' has only N spots ... whose land is already generated" means the pre-generated land holds N spots at that spacing and the other bots share them. Use a smaller spacing, pre-generate more land, or add places (`/stress chunks place add <name>` where you stand) in other generated areas: bots are shared between the places in turn.
+3. Check where they are: `/tp SSTBot_0005` and the like, or spark's player list. The report's "new chunks generated" should read 0.
+
+## 2026-10-21: /stress set, one option by hand in a running test
+
+`/stress set <option> <amount>` (D53 to D57). 93 GameTests pass (twice running), one new: with made-up options in a run, setting one by hand ends the step and begins one marked by hand; one set above its ceiling holds there at the next step while the others step on; an option not in the run is added and steps on; 0 takes one out and lets go of it; an amount over the hard limit is cut to it; ending the run lets go of the added one too.
+
+On the test server, during a run:
+1. `/stress set setups.create.millstones 10`: chat shows a new step "Step N (by hand: setups.create.millstones to 10)", and ten millstone setups appear in the setups grid. Chat also shows the profile commands to keep it.
+2. `/stress set setups.mekanism.machine_line 50` (above its ceiling of 30): the next steps leave it at 50.
+3. `/stress set setups.create.millstones 0`: they are removed.
+4. `/stress stop`: everything goes, the added ones too. The report lists the by-hand steps with their figures.
+5. With no run going, `/stress set ...` says it works only during a test.
+
+## 2026-10-21: the report counts ticks a second, not only tick length
+
+From the owner's measurement report of 14:32: "The server kept up with 20 ticks a second: average tick 16.0 ms, 11.7 ticks a second". The report judged by the average tick only. Now a server is behind below 19 measured ticks a second too, and a short-tick, few-ticks server is reported with the time that went between ticks (1,000 ms less ticks a second times the average tick) and the new land made. 94 GameTests pass (twice running), one new: that exact measurement (16 ms, 11.7 ticks a second, 645 new chunks) reads "behind ... About 813 ms of each second went to work done between ticks ... (645 new chunks were generated)"; a run falling behind on ticks a second at step 1, and one behind from the start, say so the same way.
+
+On the test server: `/stress measure 60` while flying bots or a player make new land: the report's line 3 should say "behind" with the milliseconds between ticks and the new chunks; with nothing moving, "kept up".
