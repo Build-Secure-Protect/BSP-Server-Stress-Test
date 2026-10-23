@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file. The format is b
 ## [Unreleased]
 
 ### Added
+- With BSP-Core 1.4.5 or newer, a bot's Shatter Totems are forgotten when it leaves (BSP-Core's `BspTotems.forgetPlayer`: carried and placed totems taken, every record of them dropped, nothing given back), and `/stress cleanup` has BSP-Core forget the totems of every bot name up to `limits.maxBots`, also those a server that stopped mid-run left. The test server no longer needs `grantTotemOnFirstJoin = false` for bots to leave nothing behind. With an older BSP-Core the log says once that totems are not forgotten. Built against BSP-Core 1.4.5 (still optional).
+
+### Added
 - `/stress set <option> <amount>`: changes one option of the running test at once, for example `/stress set setups.create.millstones 20`. An option the test does not have is added, `0` takes one out, and only the hard limits in `settings.toml` cap the amount. The step going ends (measured as any) and a step marked "by hand" begins, so the report shows each change at the step it happened; from there the option steps on with the rest, and one set above its ceiling holds there. For this test only: chat shows the `/stress profile` commands that would keep it for the next one. Refused when no test is running.
 
 ### Changed

@@ -54,7 +54,7 @@ Starters: `everything`, `pre_generated` (everything but new land), `players_only
 Bots are real players to every mod. Before a run with bots:
 
 - BSP-Server Utilities' rules popup holds every new player until they agree, so bots would stand frozen: turn it off with `rules.enabled = false` (a request to that mod is open).
-- BSP-Core gives every new player a Shatter Totem and places carried totems in the world when they leave: set `first_join.grantTotemOnFirstJoin = false` in BSP-Core's server config (a request to that mod is open).
+- BSP-Core gives every new player a Shatter Totem and places carried totems in the world when they leave. With BSP-Core 1.4.5 or newer the mod has BSP-Core forget a bot's totems when it leaves and in `/stress cleanup`, so nothing stays; with an older BSP-Core, set `first_join.grantTotemOnFirstJoin = false` in its server config.
 - Set the BSP mods to local storage (not MySQL) on the test server.
 - Hostile mobs need a difficulty other than peaceful.
 - Machines placed on their own (not built into a working setup) can crash the server when they tick if a mod expects them to be part of something bigger. Set `removeErroringBlockEntities = true` in the world's `serverconfig/forge-server.toml` on the test server, so Forge removes such a block instead of stopping the server.
@@ -62,7 +62,7 @@ Bots are real players to every mod. Before a run with bots:
 ## Requirements
 
 - Minecraft 1.20.1 with Forge 47.4.10 or newer, or Mohist 1.20.1.
-- Optional: BSP-Core 1.4.0 or newer (its admins may use `/stress`).
+- Optional: BSP-Core 1.4.0 or newer (its admins may use `/stress`); 1.4.5 or newer to forget bots' totems.
 
 ## Settings
 

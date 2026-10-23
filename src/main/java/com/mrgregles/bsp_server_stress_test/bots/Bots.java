@@ -42,7 +42,8 @@ import java.util.stream.Stream;
  * offline-mode UUID of the name. The server never ticks a connection it did not open, so the bots are ticked here
  * (their player tick, their move, and the channel emptied), and they never answer or miss a keep-alive. Each bot belongs
  * to a group by how it behaves (stand, wander, fly) and is placed at one of the chunk places (or spawn). When a bot leaves, its
- * player, stats and advancement files and its line in {@code usercache.json} are deleted.
+ * player, stats and advancement files and its line in {@code usercache.json} are deleted, and BSP-Core 1.4.5 or newer
+ * forgets its totems.
  * <p>
  * A bot's channel is laid out as a real connection's is ({@code timeout}, {@code legacy_query}, {@code splitter},
  * {@code decoder}, {@code prepender}, {@code encoder}, {@code packet_handler}), so plugins and mods that hook their
@@ -364,6 +365,29 @@ public final class Bots {
         ONLINE.remove(uuid);
         LOGIN_SEEN.remove(uuid);
         forgetFiles(server, uuid, bot.player.getGameProfile().getName());
+        // after BSP-Core's own logout, which places the totems a player carries: those go too (ST-C1)
+        com.mrgregles.bsp_server_stress_test.compat.BspCore.forgetPlayer(server, uuid);
+    }
+
+    /**
+     * {@code /stress cleanup}: has BSP-Core forget the totems of every bot name up to {@code limits.maxBots} that is not
+     * online, also those of bots a server that stopped mid-run left behind. Returns the totems taken, or -1 when BSP-Core
+     * cannot (absent, or older than 1.4.5).
+     */
+    public static synchronized int forgetBspCoreRecords(MinecraftServer server) {
+        int taken = 0;
+        for (int n = 1; n <= StressConfig.MAX_BOTS.get(); n++) {
+            UUID uuid = uuidOf(nameOf(n));
+            if (server.getPlayerList().getPlayer(uuid) != null) {
+                continue;
+            }
+            int t = com.mrgregles.bsp_server_stress_test.compat.BspCore.forgetPlayer(server, uuid);
+            if (t < 0) {
+                return -1;
+            }
+            taken += t;
+        }
+        return taken;
     }
 
     /** Deletes what the server saved for a bot that left: its player files, stats, advancements, name cache line (D22). */

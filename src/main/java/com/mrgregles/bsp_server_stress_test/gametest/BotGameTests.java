@@ -293,4 +293,58 @@ public class BotGameTests {
             h.succeed();
         });
     }
+
+    /**
+     * ST-C1 (BSP-Core 1.4.5): a bot given a first-join Shatter Totem leaves nothing of it behind. BSP-Core places the
+     * totems a player carries when they log out; the bot's logout then has BSP-Core forget them, so none is placed or
+     * dropped afterwards. The test world keeps the first-join grant off; it is on for this test only.
+     */
+    @GameTest(template = EMPTY, batch = "bots_bsp_core_totem", timeoutTicks = 100)
+    public void a_bot_leaves_no_bsp_core_totem_behind(GameTestHelper h) {
+        MinecraftServer server = h.getLevel().getServer();
+        boolean spawning = pauseSpawning(server);
+        var grant = com.mrgregles.bsp_core.BSPConfig.GRANT_TOTEM_ON_FIRST_JOIN;
+        boolean was = grant.get();
+        grant.set(true);
+        String problem = null;
+        java.util.UUID id = null;
+        try {
+            int asked = com.mrgregles.bsp_server_stress_test.compat.BspCore.forgottenCount();
+            Bots.setCount(server, Bots.Behaviour.STAND, 1);
+            if (Bots.count() != 1) {
+                problem = "the bot did not log in";
+            } else {
+                ServerPlayer p = Bots.online().get(0).player();
+                id = p.getUUID();
+                boolean carries = p.getInventory().items.stream().anyMatch(com.mrgregles.bsp_core.api.BspTotems::isTotem)
+                        || com.mrgregles.bsp_core.api.BspTotems.isTotem(p.getOffhandItem());
+                if (!carries && com.mrgregles.bsp_core.api.BspTotems.placed(server, id).isEmpty()) {
+                    problem = "the bot was given no first-join totem, so the test cannot tell";
+                }
+                Bots.releaseAll(server);
+                if (problem == null && com.mrgregles.bsp_server_stress_test.compat.BspCore.forgottenCount() <= asked) {
+                    problem = "BSP-Core was not asked to forget the bot";
+                }
+                if (problem == null && !com.mrgregles.bsp_core.api.BspTotems.placed(server, id).isEmpty()) {
+                    problem = "the bot's totem is still placed: " + com.mrgregles.bsp_core.api.BspTotems.placed(server, id);
+                }
+                if (problem == null && !p.serverLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                        p.getBoundingBox().inflate(16), e -> com.mrgregles.bsp_core.api.BspTotems.isTotem(e.getItem())).isEmpty()) {
+                    problem = "a totem was dropped where the bot stood";
+                }
+            }
+        } finally {
+            Bots.releaseAll(server);
+            if (id != null) {
+                com.mrgregles.bsp_server_stress_test.compat.BspCore.forgetPlayer(server, id);
+            }
+            grant.set(was);
+            restoreSpawning(server, spawning);
+        }
+        if (problem != null) {
+            h.fail(problem);
+            return;
+        }
+        h.succeed();
+    }
 }

@@ -222,6 +222,7 @@ MESSAGES = {
     "cleanup.done": "Cleaned up: %s placed blocks and %s spawned mobs, items and orbs removed, %s bots logged out, %s held chunks let go.",
     "cleanup.random_ticks": "The randomTickSpeed game rule is back to %s, as it was before the run that changed it.",
     "cleanup.trains": "%s trains left by a Create train line were taken out of Create's records.",
+    "cleanup.bsp_core": "BSP-Core forgot the totems of the bot names SSTBot_0001 to %s: %s totems taken, every record of them dropped.",
     "cleanup.run_going": "A run is going. /stress stop ends it and removes what it made.",
     "cleanup.leftover": "%s blocks placed by an earlier run are still in the world (the server stopped before the run could remove them). /stress cleanup removes them.",
     "option.bots_stand": "%s bots standing, spread out at the places",

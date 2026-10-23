@@ -266,3 +266,12 @@ On the test server, during a run:
 From the owner's measurement report of 14:32: "The server kept up with 20 ticks a second: average tick 16.0 ms, 11.7 ticks a second". The report judged by the average tick only. Now a server is behind below 19 measured ticks a second too, and a short-tick, few-ticks server is reported with the time that went between ticks (1,000 ms less ticks a second times the average tick) and the new land made. 94 GameTests pass (twice running), one new: that exact measurement (16 ms, 11.7 ticks a second, 645 new chunks) reads "behind ... About 813 ms of each second went to work done between ticks ... (645 new chunks were generated)"; a run falling behind on ticks a second at step 1, and one behind from the start, say so the same way.
 
 On the test server: `/stress measure 60` while flying bots or a player make new land: the report's line 3 should say "behind" with the milliseconds between ticks and the new chunks; with nothing moving, "kept up".
+
+## 2026-10-23: BSP-Core forgets bots' totems (ST-C1, BSP-Core 1.4.5)
+
+Built against BSP-Core 1.4.5. A bot leaving has BSP-Core forget its totems after BSP-Core's own logout (which places carried totems); `/stress cleanup` has it forget every bot name up to `limits.maxBots`. 95 GameTests pass (twice running), one new: with BSP-Core's first-join grant on for the test, a bot joins with a totem and, once it has left, BSP-Core was asked to forget it, it has no placed totem and no totem lies dropped near it; the grant is put back after.
+
+On the test server (BSP-Core 1.4.5 or newer installed):
+1. Set `first_join.grantTotemOnFirstJoin = true` again in BSP-Core's server config if you had turned it off for bots.
+2. `/stress bots 3`: each bot gets a totem. `/stress bots release`: no totems are left placed where they stood, and `/bsp totem` lookups show none for `SSTBot_0001` to `0003`.
+3. Stop the server from the console while bots are on, start it, `/stress cleanup`: "BSP-Core forgot the totems of the bot names SSTBot_0001 to SSTBot_0200: N totems taken ...".

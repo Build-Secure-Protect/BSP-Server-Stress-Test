@@ -114,7 +114,8 @@ public final class StressCommands {
      * {@code /stress cleanup} (owner decision D9): removes every block a run placed (also those a stopped server left in
      * {@code placed.json}), every mob, item and orb it spawned (and any loaded one with the mod's tag), logs every bot
      * out, lets every held chunk go, puts back a random tick speed a stopped run left changed, and takes out of Create's
-     * records any train a train line left. Not while a run is going.
+     * records any train a train line left, and has BSP-Core (1.4.5 or newer) forget every bot name's totems. Not while a
+     * run is going.
      */
     private static int cleanup(CommandSourceStack source) {
         if (com.mrgregles.bsp_server_stress_test.run.RunEngine.current() != null) {
@@ -127,6 +128,7 @@ public final class StressCommands {
         com.mrgregles.bsp_server_stress_test.explosions.Explosions.releaseAll(server);
         int bots = com.mrgregles.bsp_server_stress_test.bots.Bots.count();
         com.mrgregles.bsp_server_stress_test.bots.Bots.releaseAll(server);
+        int totems = com.mrgregles.bsp_server_stress_test.bots.Bots.forgetBspCoreRecords(server);
         int chunks = com.mrgregles.bsp_server_stress_test.chunks.ChunkHold.total();
         com.mrgregles.bsp_server_stress_test.chunks.ChunkHold.releaseAll(server);
         com.mrgregles.bsp_server_stress_test.chunks.ChunkBar.update(server);
@@ -138,6 +140,10 @@ public final class StressCommands {
         }
         if (trains > 0) {
             source.sendSuccess(() -> Text.t("cleanup.trains", Fmt.count(trains)), false);
+        }
+        if (totems >= 0) {
+            source.sendSuccess(() -> Text.t("cleanup.bsp_core", com.mrgregles.bsp_server_stress_test.bots.Bots.nameOf(StressConfig.MAX_BOTS.get()),
+                    Fmt.count(totems)), false);
         }
         return 1;
     }
