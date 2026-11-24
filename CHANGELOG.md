@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-24
+
+### Changed
+- Built against BSP-Core 1.23.0, so the older BSP-Core jars are no longer needed to build it. It still runs with the BSP-Core versions it ran with before.
+
+## [0.1.0] - 2026-10-24
+
 ### Added
 - With BSP-Core 1.4.5 or newer, a bot's Shatter Totems are forgotten when it leaves (BSP-Core's `BspTotems.forgetPlayer`: carried and placed totems taken, every record of them dropped, nothing given back), and `/stress cleanup` has BSP-Core forget the totems of every bot name up to `limits.maxBots`, also those a server that stopped mid-run left. The test server no longer needs `grantTotemOnFirstJoin = false` for bots to leave nothing behind. With an older BSP-Core the log says once that totems are not forgotten. Built against BSP-Core 1.4.5 (still optional).
 
